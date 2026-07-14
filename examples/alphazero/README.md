@@ -16,6 +16,27 @@ $ pip install -U pip && pip install -r requirements.txt
 $ python3 train.py env_id=go_9x9 seed=0
 ```
 
+`fix_autoreset_state` defaults to `true` and clears terminal metadata from the
+reset state carried into the next self-play step. Set
+`fix_autoreset_state=false` to disable this fix.
+
+## Rendering checkpoints
+
+Render every checkpoint in a training run, with one self-play episode per
+checkpoint, using:
+
+```sh
+$ python3 render.py checkpoints/go_9x9_20260714104146
+```
+
+The default output directory is
+`renders/go_9x9_20260714104146`. PNG frames are named like
+`000000_0_0.png` and GIFs like `000000_0.gif`; episode and step numbers are
+zero-based. Use `--episodes 3` for three episodes per checkpoint, `--gif`
+or `--no-gif` to control GIF creation, `--output-dir PATH` to choose a
+different output location, `--max-steps N` to override the checkpoint
+rollout horizon, and `--debug` to print JAX step progress.
+
 ## Reference
 
 - [[Silver+18](https://www.science.org/doi/10.1126/science.aar6404)] "A general reinforcement learning algorithm that masters

@@ -48,6 +48,8 @@ class Config(BaseModel):
     selfplay_batch_size: int = 1024
     num_simulations: int = 32
     max_num_steps: int = 256
+    # Clear terminal metadata from the reset state carried into the next step.
+    fix_autoreset_state: bool = False
     # training params
     training_batch_size: int = 4096
     learning_rate: float = 0.001
@@ -144,13 +146,22 @@ def selfplay(model, rng_key: jnp.ndarray) -> SelfplayOutput:
         actor = state.current_player
         keys = jax.random.split(key2, batch_size)
         state = jax.vmap(auto_reset(env.step, env.init))(state, policy_output.action, keys)
+        terminated = state.terminated
+        truncated = state.truncated
+        rewards = state.rewards
         discount = -1.0 * jnp.ones_like(value)
-        discount = jnp.where(state.terminated, 0.0, discount)
+        discount = jnp.where(terminated, 0.0, discount)
+        if config.fix_autoreset_state:
+            state = state.replace(
+                terminated=jnp.zeros_like(terminated),
+                truncated=jnp.zeros_like(truncated),
+                rewards=jnp.zeros_like(rewards),
+            )
         return state, SelfplayOutput(
             obs=observation,
             action_weights=policy_output.action_weights,
-            reward=state.rewards[jnp.arange(state.rewards.shape[0]), actor],
-            terminated=state.terminated,
+            reward=rewards[jnp.arange(rewards.shape[0]), actor],
+            terminated=terminated,
             discount=discount,
         )
 

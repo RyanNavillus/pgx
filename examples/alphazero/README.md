@@ -14,11 +14,15 @@ Note that you need to install `jax` and `jaxlib` in addition to the packages wri
 ```sh
 $ pip install -U pip && pip install -r requirements.txt
 $ python3 train.py env_id=go_9x9 seed=0
+$ python3 train.py --env-id go_9x9 --seed 0 --num-simulations 32
 ```
 
-`fix_autoreset_state` defaults to `true` and clears terminal metadata from the
-reset state carried into the next self-play step. Set
-`fix_autoreset_state=false` to disable this fix.
+Both `key=value` and conventional `--flag value` configuration arguments are
+supported. Boolean values can be written as `true` or `false`.
+
+`fix_autoreset_state` defaults to `false`. Set
+`--fix-autoreset-state true` or `fix_autoreset_state=true` to clear terminal
+metadata from the reset state carried into the next self-play step.
 
 ## Rendering checkpoints
 

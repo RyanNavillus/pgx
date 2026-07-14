@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import argparse
 import datetime
 import os
 import pickle
@@ -60,8 +61,33 @@ class Config(BaseModel):
         extra = "forbid"
 
 
-conf_dict = OmegaConf.from_cli()
-config: Config = Config(**conf_dict)
+def parse_config():
+    parser = argparse.ArgumentParser(description="Train the AlphaZero agent.")
+    fields = Config.model_fields
+    for name in fields:
+        option_names = [f"--{name}"]
+        dashed_name = name.replace("_", "-")
+        if dashed_name != name:
+            option_names.append(f"--{dashed_name}")
+        parser.add_argument(*option_names, dest=name, default=argparse.SUPPRESS)
+
+    parsed, key_value_args = parser.parse_known_args()
+    for argument in key_value_args:
+        name = argument.split("=", 1)[0]
+        if "=" not in argument or name not in fields:
+            parser.error(f"unknown configuration argument: {argument}")
+
+    config_dict = vars(parsed)
+    config_dict.update(
+        OmegaConf.to_container(
+            OmegaConf.from_cli(key_value_args),
+            resolve=True,
+        )
+    )
+    return Config(**config_dict)
+
+
+config: Config = parse_config()
 print(config)
 
 env = pgx.make(config.env_id)

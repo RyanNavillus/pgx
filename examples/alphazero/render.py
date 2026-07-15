@@ -9,6 +9,7 @@ Frames are named ``<checkpoint>_<episode>_<step>.png`` and GIFs are named
 """
 
 import argparse
+import io
 import pickle
 import time
 from pathlib import Path
@@ -62,17 +63,18 @@ def checkpoint_files(path):
     return sorted(path.glob("*.ckpt"), key=lambda p: (int(p.stem), p.name))
 
 
-def make_eval_apply(env, config):
-    def forward_fn(x, is_eval=False):
-        net = AZNet(
-            num_actions=env.num_actions,
-            num_channels=config.num_channels,
-            num_blocks=config.num_layers,
-            resnet_v2=config.resnet_v2,
-        )
-        return net(x, is_training=not is_eval, test_local_stats=False)
+def make_eval_apply(env, config, forward=None):
+    if forward is None:
+        def forward_fn(x, is_eval=False):
+            net = AZNet(
+                num_actions=env.num_actions,
+                num_channels=config.num_channels,
+                num_blocks=config.num_layers,
+                resnet_v2=config.resnet_v2,
+            )
+            return net(x, is_training=not is_eval, test_local_stats=False)
 
-    forward = hk.without_apply_rng(hk.transform_with_state(forward_fn))
+        forward = hk.without_apply_rng(hk.transform_with_state(forward_fn))
 
     def eval_apply(params, state, observation):
         return forward.apply(params, state, observation, is_eval=True)
@@ -118,7 +120,7 @@ def make_recurrent_fn(env, eval_apply):
     return recurrent_fn
 
 
-def make_rollout(env, eval_apply, recurrent_fn, num_simulations, max_steps, debug):
+def make_episode_rollout(env, action_fn, max_steps, debug):
     step = jax.vmap(env.step)
 
     @jax.jit
@@ -145,28 +147,7 @@ def make_rollout(env, eval_apply, recurrent_fn, num_simulations, max_steps, debu
                 state,
                 initial_state,
             )
-            (logits, value), _ = eval_apply(
-                model[0],
-                model[1],
-                search_state.observation,
-            )
-            root = mctx.RootFnOutput(
-                prior_logits=logits,
-                value=value,
-                embedding=search_state,
-            )
-            policy_output = mctx.gumbel_muzero_policy(
-                params=model,
-                rng_key=search_key,
-                root=root,
-                recurrent_fn=recurrent_fn,
-                num_simulations=num_simulations,
-                invalid_actions=~search_state.legal_action_mask,
-                qtransform=mctx.qtransform_completed_by_mix_value,
-                gumbel_scale=1.0,
-            )
-
-            stepped = step(search_state, policy_output.action)
+            stepped = step(search_state, action_fn(model, search_state, search_key))
             next_state = jax.tree_util.tree_map(
                 lambda current, candidate: keep_finished(current, candidate, done),
                 state,
@@ -210,6 +191,33 @@ def make_rollout(env, eval_apply, recurrent_fn, num_simulations, max_steps, debu
     return rollout
 
 
+def make_rollout(env, eval_apply, recurrent_fn, num_simulations, max_steps, debug):
+    def mcts_action(model, state, key):
+        (logits, value), _ = eval_apply(
+            model[0],
+            model[1],
+            state.observation,
+        )
+        root = mctx.RootFnOutput(
+            prior_logits=logits,
+            value=value,
+            embedding=state,
+        )
+        policy_output = mctx.gumbel_muzero_policy(
+            params=model,
+            rng_key=key,
+            root=root,
+            recurrent_fn=recurrent_fn,
+            num_simulations=num_simulations,
+            invalid_actions=~state.legal_action_mask,
+            qtransform=mctx.qtransform_completed_by_mix_value,
+            gumbel_scale=1.0,
+        )
+        return policy_output.action
+
+    return make_episode_rollout(env, mcts_action, max_steps, debug)
+
+
 def extract_episode(states, done_history, episode):
     terminal_steps = np.flatnonzero(done_history[:, episode])
     if not len(terminal_steps):
@@ -224,7 +232,22 @@ def extract_episode(states, done_history, episode):
 
 
 def write_png(state, path):
-    cairosvg.svg2png(bytestring=state.to_svg().encode("utf-8"), write_to=str(path))
+    path.write_bytes(state_to_png(state))
+
+
+def state_to_png(state):
+    return cairosvg.svg2png(bytestring=state.to_svg().encode("utf-8"))
+
+
+def _save_gif(frames, target, frame_duration):
+    frames[0].save(
+        target,
+        format="GIF",
+        save_all=True,
+        append_images=frames[1:],
+        duration=round(frame_duration * 1000),
+        loop=0,
+    )
 
 
 def write_gif(frame_paths, path, frame_duration):
@@ -233,14 +256,17 @@ def write_gif(frame_paths, path, frame_duration):
         with Image.open(frame_path) as frame:
             frames.append(frame.convert("RGB"))
 
-    frames[0].save(
-        path,
-        format="GIF",
-        save_all=True,
-        append_images=frames[1:],
-        duration=round(frame_duration * 1000),
-        loop=0,
-    )
+    _save_gif(frames, path, frame_duration)
+
+
+def states_to_gif(states, frame_duration=0.1):
+    frames = [
+        Image.open(io.BytesIO(state_to_png(state))).convert("RGB")
+        for state in states
+    ]
+    output = io.BytesIO()
+    _save_gif(frames, output, frame_duration)
+    return output.getvalue()
 
 
 def existing_frames(output_dir, checkpoint_name, episode):

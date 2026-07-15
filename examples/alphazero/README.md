@@ -14,15 +14,15 @@ Note that you need to install `jax` and `jaxlib` in addition to the packages wri
 ```sh
 $ pip install -U pip && pip install -r requirements.txt
 $ python3 train.py env_id=go_9x9 seed=0
-$ python3 train.py --env-id go_9x9 --seed 0 --num-simulations 32
 ```
 
-Both `key=value` and conventional `--flag value` configuration arguments are
-supported. Boolean values can be written as `true` or `false`.
-
 `fix_autoreset_state` defaults to `false`. Set
-`--fix-autoreset-state true` or `fix_autoreset_state=true` to clear terminal
-metadata from the reset state carried into the next self-play step.
+`fix_autoreset_state=true` to clear terminal metadata from the reset state
+carried into the next self-play step.
+
+Set `render_eval=true` to render the evaluation games as GIFs and upload them
+to W&B. The default is one GIF per evaluation; use
+`render_eval_episodes=N` for more.
 
 ## Rendering checkpoints
 

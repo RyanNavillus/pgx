@@ -12,8 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import argparse
 import datetime
+import io
 import os
 import pickle
 import time
@@ -32,6 +32,7 @@ from pgx.experimental import auto_reset
 from pydantic import BaseModel
 
 from network import AZNet
+from render import extract_episode, make_episode_rollout, states_to_gif
 
 devices = jax.local_devices()
 num_devices = len(devices)
@@ -56,38 +57,15 @@ class Config(BaseModel):
     learning_rate: float = 0.001
     # eval params
     eval_interval: int = 5
+    render_eval: bool = False
+    render_eval_episodes: int = 1
 
     class Config:
         extra = "forbid"
 
 
-def parse_config():
-    parser = argparse.ArgumentParser(description="Train the AlphaZero agent.")
-    fields = Config.model_fields
-    for name in fields:
-        option_names = [f"--{name}"]
-        dashed_name = name.replace("_", "-")
-        if dashed_name != name:
-            option_names.append(f"--{dashed_name}")
-        parser.add_argument(*option_names, dest=name, default=argparse.SUPPRESS)
-
-    parsed, key_value_args = parser.parse_known_args()
-    for argument in key_value_args:
-        name = argument.split("=", 1)[0]
-        if "=" not in argument or name not in fields:
-            parser.error(f"unknown configuration argument: {argument}")
-
-    config_dict = vars(parsed)
-    config_dict.update(
-        OmegaConf.to_container(
-            OmegaConf.from_cli(key_value_args),
-            resolve=True,
-        )
-    )
-    return Config(**config_dict)
-
-
-config: Config = parse_config()
+conf_dict = OmegaConf.from_cli()
+config: Config = Config(**conf_dict)
 print(config)
 
 env = pgx.make(config.env_id)
@@ -295,6 +273,43 @@ def evaluate(rng_key, my_model):
     return R
 
 
+def render_evaluation(model, key, iteration):
+    def evaluation_action(model, state, key):
+        model_params, model_state = model
+        (my_logits, _), _ = forward.apply(
+            model_params,
+            model_state,
+            state.observation,
+            is_eval=True,
+        )
+        opp_logits, _ = baseline(state.observation)
+        is_my_turn = (state.current_player == 0).reshape((-1, 1))
+        logits = jnp.where(is_my_turn, my_logits, opp_logits)
+        return jax.random.categorical(key, logits, axis=-1)
+
+    model = jax.tree_util.tree_map(lambda value: value[0], model)
+    rollout = make_episode_rollout(
+        env,
+        evaluation_action,
+        config.max_num_steps,
+        debug=False,
+    )
+    key, init_key = jax.random.split(key)
+    keys = jax.random.split(init_key, config.render_eval_episodes)
+    states, done_history = rollout(model, keys, key)
+    states, done_history = jax.device_get((states, done_history))
+
+    videos = {}
+    for episode in range(config.render_eval_episodes):
+        episode_states = extract_episode(states, done_history, episode)
+        videos[f"eval/vs_baseline/render_{episode}"] = wandb.Video(
+            io.BytesIO(states_to_gif(episode_states)),
+            caption=f"iteration {iteration}, episode {episode}",
+            format="gif",
+        )
+    return videos
+
+
 if __name__ == "__main__":
     wandb.init(project="pgx-az", config=config.model_dump())
 
@@ -333,6 +348,9 @@ if __name__ == "__main__":
                     f"eval/vs_baseline/lose_rate": ((R == -1).sum() / R.size).item(),
                 }
             )
+            if config.render_eval:
+                _, render_key = jax.random.split(subkey)
+                log.update(render_evaluation(model, render_key, iteration))
 
             # Store checkpoints
             model_0, opt_state_0 = jax.tree_util.tree_map(lambda x: x[0], (model, opt_state))

@@ -11,6 +11,7 @@ Frames are named ``<checkpoint>_<episode>_<step>.png`` and GIFs are named
 import argparse
 import io
 import pickle
+import sys
 import time
 from pathlib import Path
 
@@ -24,6 +25,8 @@ import pgx
 from PIL import Image
 
 from network import AZNet
+
+import train
 
 
 class _CheckpointConfig:
@@ -80,44 +83,6 @@ def make_eval_apply(env, config, forward=None):
         return forward.apply(params, state, observation, is_eval=True)
 
     return eval_apply
-
-
-def make_recurrent_fn(env, eval_apply):
-    step = jax.vmap(env.step)
-
-    def recurrent_fn(model, rng_key, action, state):
-        del rng_key
-        model_params, model_state = model
-        current_player = state.current_player
-        state = step(state, action)
-
-        (logits, value), _ = eval_apply(
-            model_params,
-            model_state,
-            state.observation,
-        )
-        logits = logits - jnp.max(logits, axis=-1, keepdims=True)
-        logits = jnp.where(
-            state.legal_action_mask,
-            logits,
-            jnp.finfo(logits.dtype).min,
-        )
-
-        reward = state.rewards[
-            jnp.arange(state.rewards.shape[0]),
-            current_player,
-        ]
-        value = jnp.where(state.terminated, 0.0, value)
-        discount = jnp.where(state.terminated, 0.0, -jnp.ones_like(value))
-
-        return mctx.RecurrentFnOutput(
-            reward=reward,
-            discount=discount,
-            prior_logits=logits,
-            value=value,
-        ), state
-
-    return recurrent_fn
 
 
 def make_episode_rollout(env, action_fn, max_steps, debug):
@@ -347,6 +312,7 @@ def parse_args():
 
 def main():
     args = parse_args()
+    saved_argv = sys.argv
     checkpoints = checkpoint_files(args.checkpoint_path)
     output_dir = args.output_dir or Path("renders") / args.checkpoint_path.name
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -367,8 +333,10 @@ def main():
         checkpoint = load_checkpoint(checkpoint_path)
         config = checkpoint["config"]
         env = pgx.make(config.env_id)
-        eval_apply = make_eval_apply(env, config)
-        recurrent_fn = make_recurrent_fn(env, eval_apply)
+        train.env = env
+        train.config = config
+        eval_apply = make_eval_apply(env, config, train.forward)
+        recurrent_fn = train.recurrent_fn
         model = tuple(jax.device_put(value) for value in checkpoint["model"])
         num_simulations = args.num_simulations or config.num_simulations
         max_steps = args.max_steps if args.max_steps is not None else config.max_num_steps

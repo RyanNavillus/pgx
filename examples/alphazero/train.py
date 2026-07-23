@@ -66,10 +66,6 @@ class Config(BaseModel):
 
 conf_dict = OmegaConf.from_cli()
 config: Config = Config(**conf_dict)
-print(config)
-
-env = pgx.make(config.env_id)
-baseline = pgx.make_baseline_model(config.env_id + "_v0")
 
 
 def forward_fn(x, is_eval=False):
@@ -313,10 +309,22 @@ def render_evaluation(model, key, iteration):
 if __name__ == "__main__":
     wandb.init(project="pgx-az", config=config.model_dump())
 
+    print(config)
+
+    env = pgx.make(config.env_id)
+    try:
+        baseline = pgx.make_baseline_model(config.env_id + "_v0")
+    except AssertionError:
+        baseline = None
     # Initialize model and opt_state
     dummy_state = jax.vmap(env.init)(jax.random.split(jax.random.PRNGKey(0), 2))
     dummy_input = dummy_state.observation
     model = forward.init(jax.random.PRNGKey(0), dummy_input)  # (params, state)
+    if baseline is None:
+        initial_model = model
+        baseline = lambda observation: forward.apply(  # noqa: E731
+            initial_model[0], initial_model[1], observation, is_eval=True
+        )[0]
     opt_state = optimizer.init(params=model[0])
     # replicates to all devices
     model, opt_state = jax.device_put_replicated((model, opt_state), devices)
